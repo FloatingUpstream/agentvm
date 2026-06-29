@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE_NAME="${OCVM_IMAGE:-opencode-vm:latest}"
+CPUS="${OCVM_CPUS:-4}"
+MEMORY="${OCVM_MEMORY:-4G}"
+SANDBOX_NAME=""
+COMMAND=(bash -l)
+FRESH=0
+READONLY=0
+PORTS=()
+
+usage() {
+  cat <<'EOF'
+Usage: ocvm [options] [directory]
+
+Open a shell inside a persistent microsandbox VM for a project directory.
+
+Options:
+  --name NAME        Use a fixed sandbox name
+  --fresh           Replace any existing sandbox for this directory
+  --readonly        Mount the project read-only
+  --opencode        Start opencode instead of a shell
+  --shell           Start an interactive shell (default)
+  --image IMAGE     Image to run (default: opencode-vm:latest)
+  --cpus N          vCPUs (default: 4)
+  --memory SIZE     Memory, e.g. 4G or 8192M (default: 4G)
+  --port SPEC       Publish a port, e.g. 3000:3000; repeatable
+  -h, --help        Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --name)
+      SANDBOX_NAME="${2:?missing value for --name}"
+      shift 2
+      ;;
+    --fresh)
+      FRESH=1
+      shift
+      ;;
+    --readonly|--read-only)
+      READONLY=1
+      shift
+      ;;
+    --shell)
+      COMMAND=(bash -l)
+      shift
+      ;;
+    --opencode)
+      COMMAND=(opencode)
+      shift
+      ;;
+    --image)
+      IMAGE_NAME="${2:?missing value for --image}"
+      shift 2
+      ;;
+    --cpus)
+      CPUS="${2:?missing value for --cpus}"
+      shift 2
+      ;;
+    --memory)
+      MEMORY="${2:?missing value for --memory}"
+      shift 2
+      ;;
+    --port|-p)
+      PORTS+=("${2:?missing value for --port}")
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      COMMAND=("$@")
+      break
+      ;;
+    -*)
+      echo "error: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+PROJECT_DIR="${1:-.}"
+PROJECT_DIR="$(realpath "$PROJECT_DIR")"
+
+if [[ ! -d $PROJECT_DIR ]]; then
+  echo "error: not a directory: $PROJECT_DIR" >&2
+  exit 1
+fi
+
+if ! command -v msb >/dev/null 2>&1; then
+  echo "error: msb is required" >&2
+  exit 1
+fi
+
+if [[ -z $SANDBOX_NAME ]]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    hash="$(printf '%s' "$PROJECT_DIR" | sha256sum | cut -c1-12)"
+  else
+    hash="$(printf '%s' "$PROJECT_DIR" | shasum -a 256 | cut -c1-12)"
+  fi
+  SANDBOX_NAME="ocvm-$hash"
+fi
+
+mount_mode=rw
+if (( READONLY )); then
+  mount_mode=ro
+fi
+
+create_args=(
+  create
+  "$IMAGE_NAME"
+  --name "$SANDBOX_NAME"
+  --cpus "$CPUS"
+  --memory "$MEMORY"
+  --mount-dir "$PROJECT_DIR:/workspace:$mount_mode"
+  --workdir /workspace
+  --label app=ocvm
+)
+
+for port in "${PORTS[@]}"; do
+  create_args+=(--port "$port")
+done
+
+if (( FRESH )); then
+  create_args+=(--replace)
+fi
+
+if ! msb inspect "$SANDBOX_NAME" >/dev/null 2>&1 || (( FRESH )); then
+  msb "${create_args[@]}"
+else
+  msb status "$SANDBOX_NAME" >/dev/null 2>&1 || msb start "$SANDBOX_NAME"
+fi
+
+exec msb exec "$SANDBOX_NAME" --tty -- "${COMMAND[@]}"
