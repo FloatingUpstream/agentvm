@@ -24,6 +24,8 @@ bin/ocvm .
 
 `ocvm` creates or reuses a persistent microsandbox for that directory, mounts the directory at `/workspace`, and starts a shell there.
 
+By default, sandbox names are derived from the directory, such as `dev-microvm-62ff4c96`.
+
 Useful flags:
 
 ```bash

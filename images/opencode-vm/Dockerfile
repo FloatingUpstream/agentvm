@@ -47,6 +47,8 @@ RUN mkdir -p /home/dev/.local/bin /home/dev/.local/state/ocvm && \
       'cd /workspace 2>/dev/null || cd "$HOME"' \
       >> /home/dev/.bashrc
 
+RUN sed -i 's|^if command -v fzf .*|if false \&\& command -v fzf \&>/dev/null; then|' /home/dev/.config/shell/inits
+
 ENV HOME=/home/dev
 ENV USER=dev
 ENV LOGNAME=dev

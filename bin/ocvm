@@ -75,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     --)
       shift
       COMMAND=("$@")
+      set --
       break
       ;;
     -*)
@@ -107,7 +108,10 @@ if [[ -z $SANDBOX_NAME ]]; then
   else
     hash="$(printf '%s' "$PROJECT_DIR" | shasum -a 256 | cut -c1-12)"
   fi
-  SANDBOX_NAME="ocvm-$hash"
+  project_name="$(basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-')"
+  project_name="${project_name#-}"
+  project_name="${project_name%-}"
+  SANDBOX_NAME="dev-${project_name:-workspace}-${hash:0:8}"
 fi
 
 mount_mode=rw

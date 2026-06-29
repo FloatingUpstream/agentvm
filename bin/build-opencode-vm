@@ -27,6 +27,7 @@ fi
 
 "$BUILDER" build "${build_args[@]}" -t "$IMAGE_NAME" "$BUILD_CONTEXT"
 "$BUILDER" save "$IMAGE_NAME" -o "$ARCHIVE"
+msb image remove --force "$IMAGE_NAME" >/dev/null 2>&1 || true
 msb image load --input "$ARCHIVE" --tag "$IMAGE_NAME"
 
 echo "Loaded $IMAGE_NAME into microsandbox"
