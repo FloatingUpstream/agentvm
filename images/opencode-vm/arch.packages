@@ -1,4 +1,5 @@
 base-devel
+bat
 clang
 cmake
 docker
