@@ -1,0 +1,4 @@
+# msb's built-in SSH and Herdr use login shells.
+if [ -f "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi

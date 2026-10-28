@@ -1,0 +1,12 @@
+# Only reviewed image inputs can reach the builder; never send incidental state.
+**
+!Dockerfile
+!arch.packages
+!package.json
+!package-lock.json
+!settings.json
+!herdr.toml
+!bash_profile
+!bashrc
+!gitconfig
+!git-credential-github-env

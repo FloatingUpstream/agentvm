@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+IMAGE_NAME="${IMAGE_NAME:-pi-vm:local}"
+BUILD_CONTEXT="$ROOT_DIR/images/pi-vm"
+ARCHIVE="${ARCHIVE:-$ROOT_DIR/.pi-vm.tar}"
+
+if command -v docker >/dev/null 2>&1; then
+  BUILDER=docker
+elif command -v podman >/dev/null 2>&1; then
+  BUILDER=podman
+else
+  echo "error: docker or podman is required to build the image" >&2
+  exit 1
+fi
+
+if ! command -v msb >/dev/null 2>&1; then
+  echo "error: msb 0.7.11 is required to load the image into microsandbox" >&2
+  exit 1
+fi
+
+build_args=()
+# Override artifact versions only together with independently verified checksums.
+for arg in BASE_IMAGE NODE_VERSION NODE_SHA256 HERDR_VERSION HERDR_SHA256; do
+  if [[ -n ${!arg:-} ]]; then
+    build_args+=(--build-arg "$arg=${!arg}")
+  fi
+done
+
+"$BUILDER" build --platform linux/amd64 "${build_args[@]}" "$@" -t "$IMAGE_NAME" "$BUILD_CONTEXT"
+"$BUILDER" save "$IMAGE_NAME" -o "$ARCHIVE"
+msb image load --input "$ARCHIVE" --tag "$IMAGE_NAME"
+
+echo "Loaded $IMAGE_NAME into microsandbox"

@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+"""Host-side lifecycle helper for a pi/herdr microsandbox. Never copies host auth."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import uuid
+from urllib.parse import urlsplit
+
+
+def run(*args, **kwargs):
+    return subprocess.run([str(a) for a in args], check=True, **kwargs)
+
+
+def executable(name):
+    value = shutil.which(name)
+    if not value:
+        raise ValueError(f"{name} is required on PATH")
+    return str(Path(value).absolute())
+
+
+def name_arg(value):
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", value):
+        raise argparse.ArgumentTypeError("use 1–63 lowercase letters, digits or hyphens; start with a letter")
+    return value
+
+
+def github_url(value):
+    url = urlsplit(value)
+    if (url.scheme != "https" or url.hostname != "github.com" or url.username
+            or url.password or url.port or url.query or url.fragment
+            or not re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?", url.path)):
+        raise ValueError("use a credential-free https://github.com/OWNER/REPO URL")
+    return value.rstrip("/")
+
+
+def guest(msb, name, *command, **kwargs):
+    return run(msb, "exec", "--no-stdin", name, "--", *command, **kwargs)
+
+
+def ensure_running(msb, name):
+    try:
+        run(msb, "ping", name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        run(msb, "start", name)
+
+
+def inspect_vm(msb, name):
+    result = run(msb, "inspect", name, "--format", "json", capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
+def project_name(directory):
+    slug = re.sub(r"[^a-z0-9]+", "-", directory.name.lower()).strip("-")[:40] or "project"
+    digest = hashlib.sha256(os.fsencode(directory)).hexdigest()[:8]
+    return f"dev-{slug}-{digest}"
+
+
+def project_mounts(directory):
+    """Keep absolute paths, including linked-worktree Git administrative paths."""
+    paths = [directory]
+    result = subprocess.run(["git", "-C", str(directory), "rev-parse",
+                             "--path-format=absolute", "--git-common-dir"],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        common = Path(result.stdout.strip()).resolve()
+        if not common.is_relative_to(directory):
+            paths.append(common)
+    return paths
+
+
+def register_project_machine(name, directory):
+    target = f"pivm-{name}"
+    profiles = json.loads(run("herdr", "machine", "list", "--json",
+                              capture_output=True, text=True).stdout)
+    existing = any(p["target"] == target and p.get("session") == "agents"
+                   and p.get("enabled", True) for p in profiles)
+    # add also bootstraps a stopped remote server, but Herdr 0.9.5 creates a
+    # new profile even for an identical target. Keep the original profile ID.
+    result = run("herdr", "machine", "add", target, "--remote-session", "agents",
+                 "--label", f"VM: {directory.name}", capture_output=True, text=True)
+    if existing:
+        match = re.search(r"Saved SSH machine ([a-f0-9]+)\.", result.stdout)
+        if match and match[1] not in {p["id"] for p in profiles}:
+            run("herdr", "machine", "remove", match[1], stdout=subprocess.DEVNULL)
+    else:
+        print(result.stdout, end="")
+
+
+def ensure_project_workspace(msb, name, directory):
+    """A restored Herdr session can ignore the VM's configured startup cwd."""
+    result = guest(msb, name, "herdr", "--session", "agents", "pane", "list",
+                   capture_output=True, text=True)
+    panes = json.loads(result.stdout)["result"]["panes"]
+    for pane in panes:
+        # Use the pane's configured cwd, not a foreground command's transient cwd.
+        if pane.get("cwd") == str(directory):
+            guest(msb, name, "herdr", "--session", "agents", "workspace", "focus",
+                  pane["workspace_id"], stdout=subprocess.DEVNULL)
+            return
+    guest(msb, name, "herdr", "--session", "agents", "workspace", "create",
+          "--cwd", directory, "--label", directory.name, "--focus",
+          stdout=subprocess.DEVNULL)
+
+
+def open_project(msb, args):
+    directory = Path(args.directory).resolve(strict=True)
+    if not directory.is_dir():
+        raise ValueError(f"not a directory: {directory}")
+    checked_path(str(directory))
+    if ":" in str(directory) or "%" in str(directory):
+        raise ValueError("msb mount paths cannot contain ':' or '%'")
+    name = args.name or project_name(directory)
+    # Serialize concurrent first launches without locking the interactive session.
+    state = Path.home() / ".local/state/pivm"
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (state / f"{name}.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            info = inspect_vm(msb, name)
+        except subprocess.CalledProcessError as error:
+            message = str(error.stderr or "")
+            if "sandbox not found" not in message.lower():
+                raise
+            info = None
+        if info is None:
+            try:
+                run(msb, "image", "inspect", args.image,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except subprocess.CalledProcessError:
+                print(f"Building {args.image} for first use…", flush=True)
+                env = dict(os.environ, IMAGE_NAME=args.image)
+                run(Path(__file__).resolve().with_name("build-pi-vm"), env=env)
+            command = [msb, "create", args.image, "--name", name,
+                       "--cpus", args.cpus, "--memory", args.memory,
+                       "--root-disk", args.disk, "--user", "dev",
+                       "--shell", "/bin/bash", "--workdir", directory,
+                       "--security", "restricted", "--label", "app=pivm",
+                       "--label", f"pivm.project={directory}"]
+            for path in project_mounts(directory):
+                checked_path(str(path))
+                if ":" in str(path) or "%" in str(path):
+                    raise ValueError("msb mount paths cannot contain ':' or '%'")
+                command += ["--mount-dir", f"{path}:{path}:rw,uid=1000,gid=1000"]
+            for variable, hosts in [
+                ("OPENAI_API_KEY", "api.openai.com"),
+                ("GH_TOKEN", "github.com,api.github.com"),
+            ]:
+                if os.environ.get(variable):
+                    command += ["--secret", f"{variable}:headers=[authorization]@{hosts}"]
+            print(f"Creating {name} — mounting {directory} read/write", flush=True)
+            run(*command)
+            guest(msb, name, "ln", "-s", "--", str(directory), "/workspace/project")
+        else:
+            if info["config"].get("labels", {}).get("pivm.project") != str(directory):
+                raise ValueError(f"{name} belongs to another setup; choose a different --name")
+            print(f"Opening {name} — {directory}", flush=True)
+            ensure_running(msb, name)
+        if not args.shell:
+            setup_ssh(msb, name)
+    if args.prepare_only:
+        return
+    if args.shell:
+        run(msb, "exec", "--tty", "--workdir", directory, name, "--", "bash", "-l")
+    else:
+        # machine add prepares the remote server, including on first launch.
+        register_project_machine(name, directory)
+        ensure_project_workspace(msb, name, directory)
+        if args.attach:
+            run("herdr", "--remote", f"pivm-{name}", "--session", "agents")
+        else:
+            print(f"Ready — select VM: {directory.name} in your existing Herdr machine sidebar.")
+
+
+def import_repo(msb, name, directory, origin=None):
+    directory = Path(directory).resolve(strict=True)
+    # Bundle only HEAD's reachable history. No host Git config, hooks, auth,
+    # working files or sibling refs are copied. This intentionally excludes dirt.
+    run("git", "-C", directory, "rev-parse", "--verify", "HEAD", stdout=subprocess.DEVNULL)
+    if origin:
+        origin = github_url(origin)
+    with tempfile.TemporaryDirectory(prefix="pivm-import-") as tmp:
+        bundle = Path(tmp) / "project.bundle"
+        run("git", "-C", directory, "bundle", "create", bundle, "HEAD")
+        guest(msb, name, "test", "!", "-e", "/workspace/project")
+        # msb copy creates root-owned files. Use a dev-owned staging directory,
+        # not sticky /tmp, so the unprivileged user can remove the transfer.
+        staging = f"/workspace/.pivm-import-{uuid.uuid4().hex}"
+        guest(msb, name, "mkdir", "-m", "700", staging)
+        try:
+            run(msb, "copy", bundle, f"{name}:{staging}/project.bundle")
+            guest(msb, name, "git", "clone", f"{staging}/project.bundle", "/workspace/project")
+            guest(msb, name, "git", "-C", "/workspace/project", "checkout", "-B", "work", "HEAD")
+            guest(msb, name, "git", "-C", "/workspace/project", "remote", "remove", "origin")
+            if origin:
+                guest(msb, name, "git", "-C", "/workspace/project", "remote", "add", "origin", origin)
+        finally:
+            guest(msb, name, "rm", "-rf", "--", staging)
+    print("Imported HEAD and its history; uncommitted/untracked files were NOT imported.")
+    if not origin:
+        print("No origin configured. Add one in the guest, or import with --origin HTTPS_URL.")
+
+
+def ssh_paths():
+    checked_path(str(Path.home()))
+    state = Path.home() / ".local/state/pivm/ssh"
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return state, state / "id_ed25519"
+
+
+def checked_path(value):
+    if any(ord(c) < 32 or c in '"\\' for c in value):
+        raise ValueError("SSH setup does not support quotes, backslashes or control characters in paths")
+    return value
+
+
+def atomic_write(path, text):
+    # Preserve dotfile-manager symlinks by replacing their referent, not the link.
+    target = path.resolve()
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.pivm-", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def ssh_stanza(msb, name, identity):
+    # ProxyCommand is interpreted by a shell; OpenSSH also expands percent tokens.
+    home = str(Path(os.environ.get("MSB_HOME", Path.home() / ".microsandbox")).resolve())
+    for path in (home, msb, str(identity)):
+        checked_path(path)
+    proxy = shlex.join(["/usr/bin/env", f"MSB_HOME={home}", msb, "ssh", "serve",
+                        name, "--stdio", "--no-inactivity-timeout"]).replace("%", "%%")
+    known_hosts = str(Path(identity).parent / "known_hosts").replace("%", "%%")
+    identity = str(identity).replace("%", "%%")
+    return (
+        f"Host pivm-{name}\n"
+        f"    HostName pivm-{name}\n"
+        "    User dev\n"
+        f'    IdentityFile "{identity}"\n'
+        "    IdentitiesOnly yes\n"
+        "    ForwardAgent no\n"
+        "    ClearAllForwardings yes\n"
+        f'    UserKnownHostsFile "{known_hosts}"\n'
+        "    StrictHostKeyChecking yes\n"
+        f"    HostKeyAlias pivm-{name}\n"
+        f"    ProxyCommand {proxy}\n"
+    )
+
+
+def setup_ssh(msb, name):
+    try:
+        info = inspect_vm(msb, name)
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"VM {name!r} does not exist. Run pivm in your project folder first.") from error
+    state, identity = ssh_paths()
+    stanza = ssh_stanza(msb, name, identity)  # validate before any config/key changes
+    with (state / "setup.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        setup_ssh_locked(msb, name, state, identity, stanza)
+        trust_local_host_key(msb, name, info, state)
+
+
+def trust_local_host_key(msb, name, info, state):
+    """Pin the public key from this local msb installation, not from the network."""
+    storage = Path(info["storage"]["path"])
+    key = storage / "ssh/host_ed25519"
+    if not key.exists():
+        # Preparing a stdio server generates its persisted host key. EOF closes
+        # the transport; no listener or port is left behind.
+        subprocess.run([msb, "ssh", "serve", name, "--stdio"],
+                       input="", capture_output=True, text=True, timeout=20)
+    if not key.is_file():
+        raise ValueError(f"msb did not create its SSH host key at {key}")
+    public = run("ssh-keygen", "-y", "-f", key, capture_output=True, text=True).stdout.strip()
+    alias = f"pivm-{name}"
+    known = state / "known_hosts"
+    lines = known.read_text().splitlines() if known.exists() else []
+    lines = [line for line in lines if not line.startswith(alias + " ")]
+    atomic_write(known, "\n".join([*lines, f"{alias} {public}"]) + "\n")
+
+
+def setup_ssh_locked(msb, name, state, identity, stanza):
+    if not identity.exists():
+        # Dedicated key: host-local transport access only, not a GitHub key.
+        run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", identity,
+            "-C", "pivm-local-transport")
+    run(msb, "ssh", "authorize", "--file", str(identity) + ".pub")
+    config = state / f"{name}.conf"
+    atomic_write(config, stanza)
+    ssh_dir = Path.home() / ".ssh"
+    ssh_dir.mkdir(exist_ok=True, mode=0o700)
+    main = ssh_dir / "config"
+    include = f'Include "{config}"'
+    previous = main.read_text() if main.exists() else ""
+    if include not in previous.splitlines():
+        # Include must be outside any preceding Host block. Prepend, don't append.
+        if previous:
+            backup = state / "ssh-config.before-pivm"
+            if not backup.exists():
+                atomic_write(backup, previous)
+        if (main.read_text() if main.exists() else "") != previous:
+            raise ValueError("SSH config changed during setup; retry rather than overwriting edits")
+        atomic_write(main, include + "\n\n" + previous)
+
+
+def parser():
+    p = argparse.ArgumentParser(description=__doc__)
+    sub = p.add_subparsers(dest="action", required=True)
+    opening = sub.add_parser("open", help="create/reuse this folder's VM and add it to the existing Herdr sidebar (default)")
+    opening.add_argument("directory", nargs="?", default=".")
+    opening.add_argument("--name", type=name_arg)
+    opening.add_argument("--image", default=os.environ.get("PIVM_IMAGE", "pi-vm:local"))
+    opening.add_argument("--cpus", type=int, default=4)
+    opening.add_argument("--memory", default="4G")
+    opening.add_argument("--disk", default="24G")
+    mode = opening.add_mutually_exclusive_group()
+    mode.add_argument("--shell", action="store_true", help="open a guest shell instead of Herdr")
+    mode.add_argument("--sidebar", action="store_true", help="register in local Herdr sidebar (default)")
+    mode.add_argument("--attach", action="store_true", help="open a dedicated remote Herdr UI instead")
+    opening.add_argument("--prepare-only", action="store_true", help=argparse.SUPPRESS)
+    create = sub.add_parser("create", help="create a new private persistent VM (never replaces)")
+    create.add_argument("name", type=name_arg)
+    create.add_argument("--image", default=os.environ.get("PIVM_IMAGE", "pi-vm:local"))
+    create.add_argument("--cpus", type=int, default=4)
+    create.add_argument("--memory", default="4G")
+    create.add_argument("--disk", default="24G")
+    create.add_argument("--openai", action="store_true", help="bind host OPENAI_API_KEY, never its raw value")
+    create.add_argument("--github", action="store_true", help="bind host GH_TOKEN for GitHub HTTPS/API")
+    source = create.add_mutually_exclusive_group()
+    source.add_argument("--clone", metavar="HTTPS_URL")
+    source.add_argument("--import", dest="import_dir", metavar="DIRECTORY")
+    create.add_argument("--origin", help="GitHub origin URL for --import")
+    imp = sub.add_parser("import", help="import local HEAD/history, not dirty or untracked files")
+    imp.add_argument("name", type=name_arg)
+    imp.add_argument("directory")
+    imp.add_argument("--origin")
+    clone = sub.add_parser("clone", help="clone GitHub into /workspace/project")
+    clone.add_argument("name", type=name_arg)
+    clone.add_argument("url")
+    export = sub.add_parser("export", help="copy guest project out; destination must not exist")
+    export.add_argument("name", type=name_arg)
+    export.add_argument("destination")
+    for action, help_text in [
+        ("start", "start a saved VM; required secret env vars must be available"),
+        ("stop", "stop VM processes, preserving disk"),
+        ("shell", "interactive guest shell"),
+        ("pi", "interactive pi at /workspace/project"),
+        ("ssh-config", "print an SSH stanza without changing host configuration"),
+        ("setup-ssh", "authorize dedicated key and add host SSH configuration"),
+        ("connect", "start VM and attach native herdr over its configured SSH alias"),
+        ("register", "add guest session to local herdr multi-machine sidebar"),
+    ]:
+        command = sub.add_parser(action, help=help_text)
+        command.add_argument("name", type=name_arg)
+        if action == "pi":
+            command.add_argument("pi_args", nargs=argparse.REMAINDER,
+                                 help="extra pi flags (after --)")
+    return p
+
+
+def main():
+    cli = parser()
+    argv = sys.argv[1:]
+    actions = cli._subparsers._group_actions[0].choices
+    if not argv or (argv[0] not in actions and argv[0] not in ("-h", "--help")):
+        argv = ["open", *argv]
+    args = cli.parse_args(argv)
+    msb = executable("msb")
+    if args.action == "open":
+        if args.cpus < 1:
+            raise ValueError("--cpus must be positive")
+        open_project(msb, args)
+        return
+    name = args.name
+    if args.action == "create":
+        if args.cpus < 1:
+            raise ValueError("--cpus must be positive")
+        if args.origin and not args.import_dir:
+            raise ValueError("--origin requires --import")
+        if args.clone:
+            github_url(args.clone)
+        if args.origin:
+            github_url(args.origin)
+        secrets = []
+        for enabled, var, hosts in [
+            (args.openai, "OPENAI_API_KEY", "api.openai.com"),
+            (args.github, "GH_TOKEN", "github.com,api.github.com"),
+        ]:
+            if enabled:
+                if not os.environ.get(var):
+                    raise ValueError(f"export {var} on the HOST first (value is never put in argv)")
+                secrets += ["--secret", f"{var}:headers=[authorization]@{hosts}"]
+        command = [msb, "create", args.image, "--name", name, "--cpus", args.cpus,
+                   "--memory", args.memory, "--root-disk", args.disk, "--user", "dev",
+                   "--shell", "/bin/bash", "--workdir", "/workspace", "--security", "restricted",
+                   "--label", "app=pivm", *secrets]
+        run(*command)
+        if args.clone:
+            guest(msb, name, "git", "clone", "--", args.clone, "/workspace/project")
+        elif args.import_dir:
+            import_repo(msb, name, args.import_dir, args.origin)
+        print(f"VM {name} ready. Next: pivm setup-ssh {name}")
+    elif args.action == "import":
+        import_repo(msb, name, args.directory, args.origin)
+    elif args.action == "clone":
+        guest(msb, name, "git", "clone", "--", github_url(args.url), "/workspace/project")
+    elif args.action == "export":
+        dest = Path(args.destination).absolute()
+        if dest.exists() or dest.is_symlink():
+            raise ValueError("export destination must not exist; do not overwrite a host checkout")
+        run(msb, "copy", f"{name}:/workspace/project", dest)
+        print("Treat exported content as untrusted; review before executing it on the host.")
+    elif args.action == "start":
+        ensure_running(msb, name)
+    elif args.action == "stop":
+        run(msb, "stop", name)
+    elif args.action in ("shell", "pi"):
+        ensure_running(msb, name)
+        extra = getattr(args, "pi_args", [])
+        if extra[:1] == ["--"]:
+            extra = extra[1:]
+        command = ["bash", "-l"] if args.action == "shell" else ["pi", *extra]
+        workdir = "/workspace" if args.action == "shell" else "/workspace/project"
+        run(msb, "exec", "--tty", "--workdir", workdir, name, "--", *command)
+    elif args.action == "ssh-config":
+        _, identity = ssh_paths()
+        print(ssh_stanza(msb, name, identity), end="")
+    elif args.action == "setup-ssh":
+        setup_ssh(msb, name)
+    elif args.action in ("connect", "register"):
+        # msb start resolves protected env-source references on the host.
+        ensure_running(msb, name)
+        if not (Path.home() / ".local/state/pivm/ssh" / f"{name}.conf").exists():
+            raise ValueError(f"run pivm setup-ssh {name}, then ssh pivm-{name} true first")
+        if args.action == "connect":
+            run("herdr", "--remote", f"pivm-{name}", "--session", "agents")
+        else:
+            run("herdr", "machine", "add", f"pivm-{name}", "--remote-session", "agents",
+                "--label", f"VM: {name}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        print(f"pivm: {error}", file=sys.stderr)
+        sys.exit(1)

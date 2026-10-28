@@ -1,0 +1,4 @@
+export PATH="$HOME/.local/bin:$HOME/.pi/agent/npm/node_modules/.bin:$HOME/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/bin"
+export EDITOR=vim VISUAL=vim
+# Preserve agentd's NODE_EXTRA_CA_CERTS and proxy environment.
+# Do not cd here: Herdr's explicitly selected pane/worktree cwd must survive.
