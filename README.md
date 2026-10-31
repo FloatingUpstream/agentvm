@@ -188,8 +188,13 @@ pivm export VM_NAME /new/path    # export project; destination must not exist
 ```
 
 The launcher uses a dedicated transport key and known-hosts file under
-`~/.local/state/pivm/ssh/`. It prepends an Include to `~/.ssh/config`, retaining
-a one-time backup, and authorizes the key in msb's SSH authorization file.
+`~/.local/state/pivm/ssh/`. It maintains one wildcard Include for that directory
+at the top of `~/.ssh/config`, retaining a one-time backup, and authorizes the
+key in msb's SSH authorization file. Older per-VM Includes are consolidated
+automatically on the next SSH setup; unrelated SSH configuration is preserved.
+Per-VM connection files stay in that directory, so new VMs no longer add
+lines to the main SSH config. After removing a VM, remove its matching
+`NAME.conf` file and saved Herdr machine entry as well.
 Host keys are pinned from local sandbox storage; SSH-agent/TCP forwarding are
 disabled. Authorization is shared across sandboxes in the same `MSB_HOME`,
 not restricted to a single VM. Keep the private transport key host-only.

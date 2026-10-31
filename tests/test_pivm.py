@@ -122,11 +122,36 @@ class LauncherTests(unittest.TestCase):
                  contextlib.redirect_stdout(io.StringIO()):
                 pivm.setup_ssh("/opt/msb", "test")
                 pivm.setup_ssh("/opt/msb", "test")
+                pivm.setup_ssh("/opt/msb", "second")
             config = (home / ".ssh/config").read_text()
             self.assertEqual(config.count("Include "), 1)
+            self.assertIn('ssh/*.conf"', config)
+            self.assertTrue((home / ".local/state/pivm/ssh/test.conf").is_file())
+            self.assertTrue((home / ".local/state/pivm/ssh/second.conf").is_file())
             self.assertTrue(config.endswith(original))
             self.assertEqual((home / ".local/state/pivm/ssh/ssh-config.before-pivm").read_text(), original)
             self.assertTrue(any("authorize" in c for c in calls))
+
+    def test_ssh_include_migrates_owned_entries_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            state = home / ".local/state/pivm/ssh"
+            state.mkdir(parents=True)
+            (home / ".ssh").mkdir()
+            unrelated = ('Include "/other/ssh/keep.conf"\n'
+                         'Host compute\n    HostName example.org\n')
+            original = (f'Include "{state}/old-vm.conf"\n\n'
+                        f'Include "{state}/another-vm.conf"\n\n'
+                        + unrelated)
+            main = home / ".ssh/config"
+            main.write_text(original)
+            with patch.object(Path, "home", return_value=home):
+                pivm.ensure_ssh_include(state)
+                first = main.read_text()
+                pivm.ensure_ssh_include(state)
+            self.assertEqual(main.read_text(), first)
+            self.assertEqual(first, f'Include "{state}/*.conf"\n\n' + unrelated)
+            self.assertEqual((state / "ssh-config.before-pivm").read_text(), original)
 
     def test_default_creates_mounted_vm_and_registers_sidebar(self):
         with tempfile.TemporaryDirectory() as tmp:

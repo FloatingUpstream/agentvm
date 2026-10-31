@@ -302,12 +302,31 @@ def setup_ssh_locked(msb, name, state, identity, stanza):
     run(msb, "ssh", "authorize", "--file", str(identity) + ".pub")
     config = state / f"{name}.conf"
     atomic_write(config, stanza)
+    ensure_ssh_include(state)
+
+
+def ensure_ssh_include(state):
+    """Keep one top-level Include; migrate only our old per-VM Includes."""
     ssh_dir = Path.home() / ".ssh"
     ssh_dir.mkdir(exist_ok=True, mode=0o700)
     main = ssh_dir / "config"
-    include = f'Include "{config}"'
+    include = f'Include "{state / "*.conf"}"'
     previous = main.read_text() if main.exists() else ""
-    if include not in previous.splitlines():
+    retained = []
+    for line in previous.splitlines(keepends=True):
+        try:
+            words = shlex.split(line, comments=True)
+        except ValueError:
+            words = []
+        if len(words) == 2 and words[0].lower() == "include":
+            path = Path(words[1])
+            if path.parent == state and (
+                    path.name == "*.conf"
+                    or re.fullmatch(r"[a-z][a-z0-9-]{0,62}\.conf", path.name)):
+                continue
+        retained.append(line)
+    updated = include + "\n\n" + "".join(retained).lstrip("\n")
+    if updated != previous:
         # Include must be outside any preceding Host block. Prepend, don't append.
         if previous:
             backup = state / "ssh-config.before-pivm"
@@ -315,7 +334,7 @@ def setup_ssh_locked(msb, name, state, identity, stanza):
                 atomic_write(backup, previous)
         if (main.read_text() if main.exists() else "") != previous:
             raise ValueError("SSH config changed during setup; retry rather than overwriting edits")
-        atomic_write(main, include + "\n\n" + previous)
+        atomic_write(main, updated)
 
 
 def parser():
