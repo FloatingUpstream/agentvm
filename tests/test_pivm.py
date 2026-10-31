@@ -27,6 +27,20 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(args.directory, "/project")
         self.assertTrue(args.dry_run)
 
+    def test_open_backend_is_selectable_and_defaults_to_core(self):
+        self.assertEqual(pivm.parser().parse_args(["open", "."]).backend, "core")
+        self.assertEqual(pivm.parser().parse_args(
+            ["open", ".", "--backend", "core"]).backend, "core")
+
+    def test_core_registration_uses_streaming_msb_transport(self):
+        with patch.object(pivm, "run") as run:
+            pivm.register_core_machine("/usr/bin/msb", "dev-test")
+        argv = run.call_args.args
+        self.assertEqual(argv[:4], ("hc", "machine", "add", "--install"))
+        self.assertEqual(argv[4], "--via")
+        self.assertIn("exec --stream --user dev dev-test --", argv[5])
+        self.assertEqual(argv[-2:], ("--name", "pivm-dev-test"))
+
     def invoke(self, argv, env=None):
         calls = []
         with patch.object(pivm, "run", side_effect=lambda *a, **kw: calls.append((a, kw))), \
@@ -165,7 +179,7 @@ class LauncherTests(unittest.TestCase):
                  patch.object(pivm, "inspect_vm", side_effect=missing), \
                  patch.object(pivm, "setup_ssh") as ssh, \
                  patch.object(pivm, "ensure_project_workspace") as workspace, \
-                 patch.object(pivm, "register_project_machine") as register, \
+                 patch.object(pivm, "register_core_machine") as register, \
                  patch.object(pivm, "project_mounts", return_value=[project]), \
                  patch.object(pivm, "run", side_effect=lambda *a, **kw: calls.append((a, kw))), \
                  patch.object(pivm, "executable", return_value="/opt/msb"), \
@@ -178,19 +192,21 @@ class LauncherTests(unittest.TestCase):
             self.assertNotIn("dummy-never-in-argv", str(calls))
             self.assertIn("--secret", create)
             self.assertNotIn("--replace", create)
-            ssh.assert_called_once()
-            workspace.assert_called_once_with("/opt/msb", pivm.project_name(project), project)
-            register.assert_called_once_with(pivm.project_name(project), project)
+            ssh.assert_not_called()
+            workspace.assert_not_called()
+            register.assert_called_once_with("/opt/msb", pivm.project_name(project))
             self.assertFalse(any(a[:2] == ("herdr", "--remote") for a, _ in calls))
             self.assertFalse(any("bundle" in a for a, _ in calls))
 
     def test_attach_opens_dedicated_ui(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            args = pivm.parser().parse_args(["open", str(root), "--attach"])
+            args = pivm.parser().parse_args(
+                ["open", str(root), "--attach", "--backend", "legacy"])
             with patch.object(Path, "home", return_value=root), \
                  patch.object(pivm, "inspect_vm", return_value={
-                     "config": {"labels": {"pivm.project": str(root)}}}), \
+                    "config": {"labels": {"pivm.project": str(root),
+                                          "pivm.backend": "legacy"}}}), \
                  patch.object(pivm, "ensure_running"), \
                  patch.object(pivm, "setup_ssh"), \
                  patch.object(pivm, "ensure_project_workspace"), \
@@ -241,10 +257,12 @@ class LauncherTests(unittest.TestCase):
     def test_existing_project_reused_without_creation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            args = pivm.parser().parse_args(["open", str(root), "--prepare-only"])
+            args = pivm.parser().parse_args(
+                ["open", str(root), "--prepare-only", "--backend", "legacy"])
             with patch.object(Path, "home", return_value=root), \
                  patch.object(pivm, "inspect_vm", return_value={
-                     "config": {"labels": {"pivm.project": str(root)}}}), \
+                    "config": {"labels": {"pivm.project": str(root),
+                                          "pivm.backend": "legacy"}}}), \
                  patch.object(pivm, "ensure_running") as start, \
                  patch.object(pivm, "setup_ssh") as ssh, \
                  patch.object(pivm, "run") as run, \

@@ -35,6 +35,10 @@ BLOCKED = re.compile(
 SKIP = {"node_modules", ".git", ".ssh", ".aws", "sessions", "__pycache__"}
 MAX_FILE = 4 * 1024 * 1024
 MAX_TOTAL = 32 * 1024 * 1024
+LEGACY_PACKAGES = {
+    "@andrewjacop/pi-herdr": "npm:@andrewjacop/pi-herdr@0.6.0",
+    "pi-herdr-btw": "npm:pi-herdr-btw@0.3.1",
+}
 
 
 def warn(message):
@@ -101,7 +105,9 @@ def pin_package(entry, agent):
     return source
 
 
-def build_payload(directory):
+def build_payload(directory, backend="core"):
+    if backend not in ("legacy", "core"):
+        raise ValueError(f"unknown Pi/Herdr backend: {backend}")
     agent = Path(os.path.abspath(os.path.expanduser(
         os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent"))))
     settings = read_json(agent / "settings.json")
@@ -175,8 +181,23 @@ def build_payload(directory):
             if collect(src, dest):
                 refs.append(prefix + "./" + dest.as_posix())
         prefs[kind] = refs
-    prefs["packages"] = [p for e in settings.get("packages", [])
-                         if (p := pin_package(e, agent)) is not None]
+    packages = []
+    for entry in settings.get("packages", []):
+        pinned = pin_package(entry, agent)
+        if pinned is None:
+            continue
+        source = pinned.get("source") if isinstance(pinned, dict) else pinned
+        name = source[4:].rsplit("@", 1)[0] if source.startswith("npm:") else ""
+        # The host's selected integration should follow the VM backend, never
+        # leave both delegation extensions active in the same Pi session.
+        if backend == "legacy" and name == "@howaboua/pi-shepherdr":
+            continue
+        if name in LEGACY_PACKAGES and (backend == "core" or backend == "legacy"):
+            continue
+        packages.append(pinned)
+    if backend == "legacy":
+        packages.extend(LEGACY_PACKAGES.values())
+    prefs["packages"] = packages
     if any(name.startswith("extensions/") for name in files):
         warn("copied extensions may require host-only desktop services or "
              "dependencies; resource contents are not rewritten")
@@ -310,9 +331,9 @@ def guest_apply(payload):
     print(f"pivm sync: synced {len(owned)} resource files")
 
 
-def sync(msb, name, directory, dry_run=False):
+def sync(msb, name, directory, dry_run=False, backend="core"):
     """Export host preferences/resources; dry-run never contacts the VM."""
-    payload = build_payload(directory)
+    payload = build_payload(directory, backend)
     if dry_run:
         print(f"pivm sync dry-run: {len(payload['files'])} files; "
               f"{len(payload['settings']['packages'])} packages; "

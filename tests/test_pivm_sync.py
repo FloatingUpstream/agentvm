@@ -40,7 +40,7 @@ class SyncTests(unittest.TestCase):
     def build(self):
         with patch.object(sync.subprocess, "run", return_value=subprocess.CompletedProcess(
                 [], 1, "", "")):
-            return sync.build_payload(self.home)
+            return sync.build_payload(self.home, "legacy")
 
     def payload(self, files=None, settings=None):
         return {"files": {k: base64.b64encode(v.encode()).decode()
@@ -101,8 +101,22 @@ class SyncTests(unittest.TestCase):
         payload = self.build()
         self.assertEqual(payload["settings"]["packages"], [
             {"source": "npm:@test/plugin@2.3.4", "skills": [], "extensions": ["x.ts"]},
-            "git:github.com/a/b"])
+            "git:github.com/a/b", *sync.LEGACY_PACKAGES.values()])
         self.assertFalse(any("node_modules" in p for p in payload["files"]))
+
+    def test_backend_sync_selects_only_its_orchestration_extension(self):
+        self.put("npm/node_modules/@howaboua/pi-shepherdr/package.json",
+                 '{"version":"0.2.25"}')
+        self.put("npm/node_modules/@andrewjacop/pi-herdr/package.json",
+                 '{"version":"0.6.0"}')
+        self.settings({"packages": ["npm:@howaboua/pi-shepherdr",
+                                    "npm:@andrewjacop/pi-herdr"]})
+        legacy = self.build()
+        core = sync.build_payload(self.home, "core")
+        self.assertEqual(legacy["settings"]["packages"],
+                         list(sync.LEGACY_PACKAGES.values()))
+        self.assertEqual(core["settings"]["packages"],
+                         ["npm:@howaboua/pi-shepherdr@0.2.25"])
 
     def test_dry_run_no_guest_calls_and_prints_plan(self):
         self.put("prompts/a.md", "hello")
