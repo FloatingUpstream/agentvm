@@ -8,5 +8,6 @@
 !herdr.toml
 !bash_profile
 !bashrc
+!starship.toml
 !gitconfig
 !git-credential-github-env

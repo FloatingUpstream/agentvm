@@ -355,6 +355,12 @@ def parser():
     export = sub.add_parser("export", help="copy guest project out; destination must not exist")
     export.add_argument("name", type=name_arg)
     export.add_argument("destination")
+    syncing = sub.add_parser("sync", help="copy host Pi preferences/resources and Git identity into an existing VM")
+    syncing.add_argument("name", type=name_arg)
+    syncing.add_argument("--directory", default=".",
+                         help="host project used to resolve Git identity (default: current directory)")
+    syncing.add_argument("--dry-run", action="store_true",
+                         help="show the host-side sync plan without changing the VM")
     for action, help_text in [
         ("start", "start a saved VM; required secret env vars must be available"),
         ("stop", "stop VM processes, preserving disk"),
@@ -387,7 +393,23 @@ def main():
         open_project(msb, args)
         return
     name = args.name
-    if args.action == "create":
+    if args.action == "sync":
+        # This helper is host-side only; no image rebuild is required.
+        from pivm_sync import sync
+        directory = Path(args.directory).resolve(strict=True)
+        if not directory.is_dir():
+            raise ValueError(f"not a directory: {directory}")
+        if not args.dry_run:
+            inspect_vm(msb, name)
+            ensure_running(msb, name)
+            state = Path.home() / ".local/state/pivm"
+            state.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with (state / f"{name}.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                sync(msb, name, directory)
+        else:
+            sync(msb, name, directory, dry_run=True)
+    elif args.action == "create":
         if args.cpus < 1:
             raise ValueError("--cpus must be positive")
         if args.origin and not args.import_dir:

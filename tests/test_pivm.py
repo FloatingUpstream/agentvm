@@ -19,6 +19,14 @@ loader.exec_module(pivm)
 
 
 class LauncherTests(unittest.TestCase):
+    def test_sync_cli_explicit_directory_and_dry_run(self):
+        args = pivm.parser().parse_args(
+            ["sync", "test", "--directory", "/project", "--dry-run"])
+        self.assertEqual(args.action, "sync")
+        self.assertEqual(args.name, "test")
+        self.assertEqual(args.directory, "/project")
+        self.assertTrue(args.dry_run)
+
     def invoke(self, argv, env=None):
         calls = []
         with patch.object(pivm, "run", side_effect=lambda *a, **kw: calls.append((a, kw))), \

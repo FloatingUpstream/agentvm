@@ -1,4 +1,35 @@
 export PATH="$HOME/.local/bin:$HOME/.pi/agent/npm/node_modules/.bin:$HOME/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/bin"
-export EDITOR=vim VISUAL=vim
+export EDITOR=nvim VISUAL=nvim
 # Preserve agentd's NODE_EXTRA_CA_CERTS and proxy environment.
 # Do not cd here: Herdr's explicitly selected pane/worktree cwd must survive.
+
+# Keep RPC, SSH exec and agent shell commands free of prompt/alias side effects.
+[[ $- == *i* ]] || return 0
+
+HISTCONTROL=ignoreboth:erasedups
+HISTSIZE=10000
+HISTFILESIZE=20000
+shopt -s histappend checkwinsize
+
+if [[ -r /usr/share/bash-completion/bash_completion ]]; then
+  . /usr/share/bash-completion/bash_completion
+fi
+if command -v dircolors >/dev/null 2>&1; then
+  eval "$(dircolors -b)"
+fi
+alias ls='eza -lh --group-directories-first --icons=auto --color=auto'
+alias ll='ls'
+alias la='ls -a'
+alias lsa='ls -a'
+alias lt='eza --tree --level=2 --long --icons=auto --color=auto --git'
+alias lta='lt -a'
+alias grep='grep --color=auto'
+alias ff="fzf --preview 'bat --style=numbers --color=always -- {}'"
+alias lg='lazygit'
+
+if [[ ${TERM:-dumb} != dumb ]]; then
+  [[ ! -r /usr/share/fzf/completion.bash ]] || . /usr/share/fzf/completion.bash
+  [[ ! -r /usr/share/fzf/key-bindings.bash ]] || . /usr/share/fzf/key-bindings.bash
+  eval "$(zoxide init bash)"
+  eval "$(starship init bash)"
+fi

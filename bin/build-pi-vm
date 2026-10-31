@@ -22,7 +22,7 @@ fi
 
 build_args=()
 # Override artifact versions only together with independently verified checksums.
-for arg in BASE_IMAGE NODE_VERSION NODE_SHA256 HERDR_VERSION HERDR_SHA256; do
+for arg in BASE_IMAGE NODE_VERSION NODE_SHA256 HERDR_VERSION HERDR_SHA256 HUNK_VERSION HUNK_SHA256; do
   if [[ -n ${!arg:-} ]]; then
     build_args+=(--build-arg "$arg=${!arg}")
   fi

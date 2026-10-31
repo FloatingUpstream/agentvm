@@ -1,12 +1,13 @@
 # Pi VM image inputs
 
-Fresh Arch userspace for msb 0.7.11, x86-64 only. No guest sshd, sudo,
+Arch userspace for msb 0.7.11, x86-64 only. No guest sshd, sudo,
 host home, or host node_modules.
 The dev user has UID/GID 1000 and owns `/workspace` and `/home/dev`.
 
 `bin/build-pi-vm` follows the existing build/save/msb-load convention. It
 accepts `IMAGE_NAME`, `ARCHIVE`, and build-argument environment overrides
-`BASE_IMAGE`, `NODE_VERSION`, `NODE_SHA256`, `HERDR_VERSION`, `HERDR_SHA256`.
+`BASE_IMAGE`, `NODE_VERSION`, `NODE_SHA256`, `HERDR_VERSION`, `HERDR_SHA256`,
+`HUNK_VERSION`, `HUNK_SHA256`.
 No token or credential build arguments are accepted. The build context is
 only this directory. Default image name: `pi-vm:local`.
 
@@ -25,6 +26,13 @@ only this directory. Default image name: `pi-vm:local`.
 - Pi 1.4.0 and all nine top-level extension versions are pinned in `package.json`.
   The checked-in lock pins guest transitive resolution, including integrity
   hashes.
+- Hunk 0.24.1 upstream `hunkdiff-linux-x64.tar.gz` from
+  `https://github.com/modem-dev/hunk/releases/tag/v0.24.1`, checked against the
+  GitHub release asset SHA-256:
+  `4b8c98f8d97745499916cc1e1d2f27ffd258c6d6358dd4532f61e41c5eb19692`.
+  Only the executable is installed; no host binary or config is copied.
+- lazygit, Neovim, bat, eza, fzf, zoxide, Starship and bash-completion come from
+  signed Arch repositories. LazyVim plugins are not included.
 - `npm ci --ignore-scripts --legacy-peer-deps` suppresses lifecycle hooks
   and automatic peer installation, matching Pi's package provisioning policy.
   The configured package sources are guest-local paths, not unversioned npm
@@ -34,10 +42,18 @@ only this directory. Default image name: `pi-vm:local`.
 
 ## Runtime configuration
 
-Pi has no baked-in provider, model endpoint, login, or credentials. Supply those
-through the launcher at runtime. The settings configure dark theme, medium
-thinking, visible thinking, and disabled telemetry; project trust still asks.
-The Nord theme package is included.
+Interactive Bash uses eza for colored long listings, a small Starship prompt,
+bash-completion, fzf completion/history bindings and zoxide (`z`). `bat` is
+available explicitly; `cat` is not aliased. `EDITOR` and `VISUAL` select `nvim`.
+These defaults are image-owned, not copies/mounts of host shell configuration.
+Noninteractive shells do not initialize prompts, aliases or interactive hooks.
+
+Pi has no baked-in provider, model endpoint, login or credentials. Use `/login`
+inside each VM, or optional API-key bindings at creation. Image settings use
+dark theme, medium thinking, visible thinking and disabled telemetry; project
+trust still asks. The Nord theme package is included. Explicit `pivm sync`
+can replace supported preferences and package declarations with the host's;
+the image defaults do not change.
 
 msb 0.7.11 agentd supplies `NODE_EXTRA_CA_CERTS=/.msb/tls/ca.pem` and appends its
 CA to distro bundles. Neither shell startup nor Docker ENV overrides this.
@@ -48,7 +64,8 @@ Git's credential helper answers only `get` for HTTPS `github.com` with runtime
 and never writes credentials. `gh` is available via Arch's `github-cli`.
 No token is required to build this public-artifact image.
 
-Pi Web Access 0.45.0 can use keyless Exa MCP; other providers/features may need
+The image pins Pi Web Access 0.45.0; explicit sync may install a different
+host-installed version. It can use keyless Exa MCP; other providers/features need
 host-supplied runtime keys or a separately provisioned
 `/home/dev/.pi/agent/web-search.json`. Its config supports environment references
 such as `"braveApiKey": "$BRAVE_API_KEY"`. Do not bake real values or browser

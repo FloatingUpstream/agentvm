@@ -3,6 +3,14 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE="$ROOT/images/pi-vm"
 grep -Fq 'directory = "/home/dev/worktrees"' "$IMAGE/herdr.toml"
+grep -Fxq lazygit "$IMAGE/arch.packages"
+grep -Fxq neovim "$IMAGE/arch.packages"
+for package in bash-completion bat eza fzf starship zoxide; do
+  grep -Fxq "$package" "$IMAGE/arch.packages"
+done
+grep -Fq 'ARG HUNK_VERSION=0.24.1' "$IMAGE/Dockerfile"
+grep -Fq 'ARG HUNK_SHA256=4b8c98f8d97745499916cc1e1d2f27ffd258c6d6358dd4532f61e41c5eb19692' "$IMAGE/Dockerfile"
+grep -Fq 'install -m 0755 /tmp/hunk/hunk /usr/local/bin/hunk' "$IMAGE/Dockerfile"
 for file in "$ROOT/bin/build-pi-vm" "$IMAGE"/{bash_profile,bashrc,git-credential-github-env,test.sh}; do
   bash -n "$file"
 done
@@ -85,5 +93,14 @@ HOME="$tmp/home" NODE_EXTRA_CA_CERTS=/.msb/tls/ca.pem \
     [[ $PATH == "$HOME/.local/bin:$HOME/.pi/agent/npm/node_modules/.bin:"* ]]
     [[ $NODE_EXTRA_CA_CERTS == /.msb/tls/ca.pem ]]
     [[ $PWD == /tmp ]]
+    [[ $EDITOR == nvim && $VISUAL == nvim ]]
+    ! alias ls >/dev/null 2>&1
   ' bash "$IMAGE/bash_profile"
+# Interactive defaults should provide the friendly listing and Git shortcuts.
+HOME="$tmp/home" TERM=dumb /bin/bash --noprofile --norc -ic '
+  . "$1"
+  [[ $(alias ls) == *"eza -lh"* ]]
+  [[ $(alias lg) == *"lazygit"* ]]
+  [[ $EDITOR == nvim ]]
+' bash "$IMAGE/bashrc" 2>"$tmp/interactive-stderr"
 echo "pi-vm static and mocked-wrapper tests passed (no image built)"
