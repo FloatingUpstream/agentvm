@@ -98,7 +98,10 @@ def register_project_machine(name, directory):
 def register_core_machine(msb, name):
     # hc appends its remote command to this argv. --stream is byte-faithful
     # and avoids an SSH daemon, key, or host SSH config entry.
-    via = shlex.join([msb, "exec", "--stream", "--user", "dev", name, "--"])
+    # hc passes the remote command as a single shell-line argument. msb treats
+    # that as one executable name unless it is explicitly fed to sh -lc.
+    via = shlex.join([msb, "exec", "--stream", "--user", "dev", name,
+                      "--", "sh", "-lc"])
     run("hc", "machine", "add", "--install", "--via", via,
         "--name", f"pivm-{name}")
 

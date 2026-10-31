@@ -38,7 +38,7 @@ class LauncherTests(unittest.TestCase):
         argv = run.call_args.args
         self.assertEqual(argv[:4], ("hc", "machine", "add", "--install"))
         self.assertEqual(argv[4], "--via")
-        self.assertIn("exec --stream --user dev dev-test --", argv[5])
+        self.assertIn("exec --stream --user dev dev-test -- sh -lc", argv[5])
         self.assertEqual(argv[-2:], ("--name", "pivm-dev-test"))
 
     def invoke(self, argv, env=None):
