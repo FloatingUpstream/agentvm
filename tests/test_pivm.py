@@ -19,6 +19,31 @@ loader.exec_module(pivm)
 
 
 class LauncherTests(unittest.TestCase):
+    def test_project_names_are_short_valid_and_path_specific(self):
+        for basename in ["plantmonitoring", "a" * 100, "---", "123 project", "日本語"]:
+            with self.subTest(basename=basename):
+                directory = Path("/projects") / basename
+                name = pivm.project_name(directory)
+                self.assertEqual(pivm.name_arg(name), name)
+                self.assertLessEqual(len(name), 27)
+                self.assertEqual(name, pivm.project_name(directory))
+                self.assertNotEqual(name, pivm.project_name(Path("/other") / basename))
+                self.assertEqual(pivm.core_machine_name(name), f"vm-{name}")
+        self.assertRegex(pivm.project_name(Path("/projects/plantmonitoring")),
+                         r"^plantmonitoring-[0-9a-f]{6}$")
+
+    def test_core_registration_shortens_long_names_without_changing_transport(self):
+        for name in ["dev-plantmonitoring-148d8ce8-extra", "a" * 63]:
+            with self.subTest(name=name), patch.object(pivm, "run") as run:
+                pivm.register_core_machine("/usr/bin/msb", name)
+                argv = run.call_args.args
+                target = argv[-1]
+                self.assertLessEqual(len(target), 32)
+                self.assertRegex(target, r"^vm-[a-z0-9-]+$")
+                self.assertEqual(target, pivm.core_machine_name(name))
+                self.assertIn(f" {name} -- sh -lc", argv[5])
+                self.assertNotEqual(target, pivm.core_machine_name(name + "b"))
+
     def test_sync_cli_explicit_directory_and_dry_run(self):
         args = pivm.parser().parse_args(
             ["sync", "test", "--directory", "/project", "--dry-run"])
@@ -39,7 +64,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(argv[:4], ("hc", "machine", "add", "--install"))
         self.assertEqual(argv[4], "--via")
         self.assertIn("exec --stream --user dev dev-test -- sh -lc", argv[5])
-        self.assertEqual(argv[-2:], ("--name", "pivm-dev-test"))
+        self.assertEqual(argv[-2:], ("--name", "vm-dev-test"))
 
     def invoke(self, argv, env=None):
         calls = []
@@ -180,6 +205,7 @@ class LauncherTests(unittest.TestCase):
                  patch.object(pivm, "setup_ssh") as ssh, \
                  patch.object(pivm, "ensure_project_workspace") as workspace, \
                  patch.object(pivm, "register_core_machine") as register, \
+                 patch.object(pivm, "sync_project") as sync, \
                  patch.object(pivm, "project_mounts", return_value=[project]), \
                  patch.object(pivm, "run", side_effect=lambda *a, **kw: calls.append((a, kw))), \
                  patch.object(pivm, "executable", return_value="/opt/msb"), \
@@ -195,6 +221,7 @@ class LauncherTests(unittest.TestCase):
             ssh.assert_not_called()
             workspace.assert_not_called()
             register.assert_called_once_with("/opt/msb", pivm.project_name(project))
+            sync.assert_called_once_with("/opt/msb", pivm.project_name(project), project, "core")
             self.assertFalse(any(a[:2] == ("herdr", "--remote") for a, _ in calls))
             self.assertFalse(any("bundle" in a for a, _ in calls))
 
@@ -216,7 +243,7 @@ class LauncherTests(unittest.TestCase):
                 pivm.open_project("/opt/msb", args)
             self.assertEqual(run.call_count, 1)
             self.assertEqual(run.call_args.args, ("herdr", "--remote",
-                             f"pivm-{pivm.project_name(root)}", "--session", "agents"))
+                             f"vm-{pivm.project_name(root)}", "--session", "agents"))
 
     def test_project_workspace_created_when_restored_session_is_in_home(self):
         response = subprocess.CompletedProcess([], 0, stdout=json.dumps({"result": {
@@ -228,7 +255,7 @@ class LauncherTests(unittest.TestCase):
             "create", "--cwd", Path("/project"), "--label", "project", "--focus"))
 
     def test_registration_keeps_original_profile_after_server_bootstrap(self):
-        profiles = [{"id": "aaaa", "target": "pivm-test", "session": "agents",
+        profiles = [{"id": "aaaa", "target": "vm-test", "session": "agents",
                      "enabled": True}]
         with patch.object(pivm, "run", side_effect=[
                 subprocess.CompletedProcess([], 0, stdout=json.dumps(profiles)),
@@ -265,12 +292,51 @@ class LauncherTests(unittest.TestCase):
                                           "pivm.backend": "legacy"}}}), \
                  patch.object(pivm, "ensure_running") as start, \
                  patch.object(pivm, "setup_ssh") as ssh, \
+                 patch.object(pivm, "sync_project") as sync, \
                  patch.object(pivm, "run") as run, \
                  contextlib.redirect_stdout(io.StringIO()):
                 pivm.open_project("/opt/msb", args)
             start.assert_called_once()
             ssh.assert_called_once()
             run.assert_not_called()
+            sync.assert_not_called()
+
+    def test_initial_sync_opt_out_and_failure(self):
+        for backend, no_sync, fail in [
+            ("core", True, False), ("legacy", False, False), ("core", False, True)
+        ]:
+            with self.subTest(backend=backend, no_sync=no_sync, fail=fail), \
+                 tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                argv = ["open", str(root), "--prepare-only", "--backend", backend]
+                if no_sync:
+                    argv.append("--no-sync")
+                args = pivm.parser().parse_args(argv)
+                missing = subprocess.CalledProcessError(
+                    1, "inspect", stderr="sandbox not found")
+                errors = io.StringIO()
+                with patch.object(Path, "home", return_value=root), \
+                     patch.object(pivm, "inspect_vm", side_effect=missing), \
+                     patch.object(pivm, "project_mounts", return_value=[root]), \
+                     patch.object(pivm, "run"), \
+                     patch.object(pivm, "setup_ssh") as ssh, \
+                     patch.object(pivm, "sync_project",
+                                  side_effect=RuntimeError("sync failed") if fail else None) as sync, \
+                     contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(errors):
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError, "sync failed"):
+                            pivm.open_project("/opt/msb", args)
+                        self.assertIn("pivm sync ", errors.getvalue())
+                        self.assertIn("--backend core", errors.getvalue())
+                        ssh.assert_not_called()
+                    else:
+                        pivm.open_project("/opt/msb", args)
+                if no_sync:
+                    sync.assert_not_called()
+                else:
+                    sync.assert_called_once_with(
+                        "/opt/msb", pivm.project_name(root), root, backend)
 
     def test_setup_missing_vm_does_not_modify_ssh(self):
         with patch.object(pivm, "inspect_vm", side_effect=subprocess.CalledProcessError(1, "inspect")), \

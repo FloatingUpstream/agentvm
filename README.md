@@ -31,12 +31,27 @@ pivm --backend legacy            # legacy Herdr sidebar
 The launcher creates or starts a VM and mounts the project read/write at its
 original absolute path. Legacy mode configures SSH and registers **VM:
 myproject** in the local Herdr sidebar. Core mode runs `hc machine add --via`
-through `msb exec --stream`; select `pivm-<vm-name>` in Herdr Core/the desktop
+through `msb exec --stream`; select `vm-<vm-name>` in Herdr Core/the desktop
 app. Each VM records its backend at creation; choose another VM name to use
 both backends for the same project.
 Guest Pi, child agents, worktrees and sessions stay inside the VM.
 
-Use `msb list` to find the generated VM name, then sync configuration:
+Generated VM names use a short project slug plus a six-character path hash,
+for example `plantmonitoring-148d8c`. Core machine names are capped at its
+32-character limit, including the `vm-` prefix; long custom names get a
+hashed suffix. The launcher prints the exact Core name to select.
+Existing VMs are not renamed: reopen an older generated VM explicitly with
+`pivm --name dev-plantmonitoring-148d8ce8` to keep its disk and sessions.
+Otherwise the new naming scheme creates a separate VM on the next launch.
+
+New project VMs automatically sync supported host Pi preferences (including the
+model list), packages, personal resources and Git identity before opening the
+session. This uses the same scope and safety exclusions as `pivm sync` below.
+Use `pivm --no-sync` to skip the initial copy. Reopening an existing VM does not
+sync again. If initial sync fails, the VM remains available; run the printed
+`pivm sync` command on the host before reopening it.
+
+Use `msb list` to find the generated VM name, then refresh configuration later:
 
 ```bash
 pivm sync VM_NAME --backend legacy --dry-run
@@ -44,7 +59,7 @@ pivm sync VM_NAME --backend legacy
 ```
 
 Use `--backend core` to sync `@howaboua/pi-shepherdr` instead of legacy
-`pi-herdr`; the default is legacy. This selection should match the backend used
+`pi-herdr`; the default is Core. This selection should match the backend used
 to open the VM. Start Pi inside the guest and use **`/login` once per VM**.
 Login and session data persist on the guest disk; host Pi auth is never copied
 or mounted.
@@ -67,7 +82,9 @@ Agents can read, change or delete files and secrets in these mounted paths.
 
 ## Pi configuration sync and Git commits
 
-`pivm sync` is an explicit, one-way host-to-guest copy, not a live mount. Its
+Sync is a one-way host-to-guest copy, not a live mount. It runs automatically
+once when `pivm` creates a project VM (unless `--no-sync` is passed); use
+`pivm sync` explicitly for later updates or existing VMs. Its
 default backend is Core; pass `--backend legacy` for legacy Herdr. It syncs
 host-declared Pi packages at their installed versions and selects the matching
 orchestration extension. Stop Pi, sync, then restart it. Do not load both
@@ -124,10 +141,13 @@ settings are not automatically copied.
 
 The image includes Pi 1.4.0, Herdr 0.9.5, Node 25.2.1, Hunk 0.24.1,
 lazygit, Neovim, Vim, Git, gh, ripgrep, fd, jq, Python, base-devel and mise.
-The image includes the legacy pi-herdr package; host Pi package declarations
-are synchronized explicitly and may select a different integration. Other
-pinned image packages include pi-herdr-btw, Codex tools/usage/compaction
-helpers, pi-web-access, Nord, daybreak and reset-usage-limit.
+The image includes pi-shepherdr rather than legacy pi-herdr/pi-herdr-btw;
+host Pi package declarations are synchronized explicitly and may select a
+different integration. Use `pivm sync VM_NAME --backend legacy` before using
+the legacy integration. Other pinned image packages include Codex
+tools/usage/compaction helpers, pi-web-access, Nord, daybreak and
+reset-usage-limit. Pi Codex Conversion is installed with all its resources
+disabled, matching the host package snapshot.
 Project toolchains can be installed in the guest with mise; unreviewed project
 mise configuration is not automatically trusted.
 

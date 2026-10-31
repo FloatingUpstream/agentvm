@@ -30,10 +30,20 @@ for (const [name, version] of Object.entries(pkg.dependencies)) {
   assert.equal(lock.packages[`node_modules/${name}`].version, version);
 }
 assert.equal(settings.packages.length, 9);
-for (const path of settings.packages) {
+for (const entry of settings.packages) {
+  const path = typeof entry === "string" ? entry : entry.source;
   assert.ok(path.startsWith("./npm/node_modules/"));
   assert.ok(pkg.dependencies[path.slice("./npm/node_modules/".length)]);
 }
+for (const name of ["@andrewjacop/pi-herdr", "pi-herdr-btw"]) {
+  assert.ok(!(name in pkg.dependencies), `legacy extension still included: ${name}`);
+}
+assert.equal(pkg.dependencies["@howaboua/pi-shepherdr"], "0.2.25");
+assert.ok(settings.packages.includes("./npm/node_modules/@howaboua/pi-shepherdr"));
+assert.deepEqual(settings.packages.find(entry => typeof entry === "object"), {
+  source: "./npm/node_modules/@howaboua/pi-codex-conversion",
+  extensions: [], skills: [], prompts: [], themes: []
+});
 for (const entry of Object.values(lock.packages)) {
   if (entry.resolved) {
     assert.ok(entry.resolved.startsWith("https://registry.npmjs.org/"));

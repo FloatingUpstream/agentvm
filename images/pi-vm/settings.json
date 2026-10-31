@@ -8,13 +8,19 @@
   "defaultProjectTrust": "ask",
   "packages": [
     "./npm/node_modules/@maddeye/pi-nord",
-    "./npm/node_modules/pi-herdr-btw",
     "./npm/node_modules/pi-codex-tools",
     "./npm/node_modules/pi-web-access",
     "./npm/node_modules/pi-codex-compaction",
     "./npm/node_modules/@calesennett/pi-codex-usage",
     "./npm/node_modules/pi-reset-usage-limit",
     "./npm/node_modules/pi-daybreak-param",
-    "./npm/node_modules/@andrewjacop/pi-herdr"
+    "./npm/node_modules/@howaboua/pi-shepherdr",
+    {
+      "source": "./npm/node_modules/@howaboua/pi-codex-conversion",
+      "extensions": [],
+      "skills": [],
+      "prompts": [],
+      "themes": []
+    }
   ]
 }

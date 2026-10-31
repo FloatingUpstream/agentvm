@@ -5,14 +5,14 @@
   "description": "Pinned Pi and the host's non-secret extension package snapshot",
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
-    "@andrewjacop/pi-herdr": "0.6.0",
     "@calesennett/pi-codex-usage": "0.1.14",
+    "@howaboua/pi-codex-conversion": "4.0.7",
+    "@howaboua/pi-shepherdr": "0.2.25",
     "@maddeye/pi-nord": "1.0.0",
-    "pi-codex-compaction": "0.2.4",
-    "pi-codex-tools": "0.4.0",
+    "pi-codex-compaction": "0.2.5",
+    "pi-codex-tools": "0.4.1",
     "pi-daybreak-param": "0.1.6",
-    "pi-herdr-btw": "0.3.1",
     "pi-reset-usage-limit": "0.1.1",
-    "pi-web-access": "0.45.0"
+    "pi-web-access": "0.46.0"
   }
 }

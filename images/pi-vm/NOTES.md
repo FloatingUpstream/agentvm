@@ -26,6 +26,9 @@ only this directory. Default image name: `pi-vm:local`.
 - Pi 1.4.0 and all nine top-level extension versions are pinned in `package.json`.
   The checked-in lock pins guest transitive resolution, including integrity
   hashes.
+  The snapshot uses pi-shepherdr 0.2.25, not legacy pi-herdr/pi-herdr-btw.
+  Pi Codex Conversion 4.0.7 is installed with all resources disabled, matching
+  the host declaration. Codex tools 0.4.1 and compaction 0.2.5 are included.
 - Hunk 0.24.1 upstream `hunkdiff-linux-x64.tar.gz` from
   `https://github.com/modem-dev/hunk/releases/tag/v0.24.1`, checked against the
   GitHub release asset SHA-256:
@@ -64,7 +67,7 @@ Git's credential helper answers only `get` for HTTPS `github.com` with runtime
 and never writes credentials. `gh` is available via Arch's `github-cli`.
 No token is required to build this public-artifact image.
 
-The image pins Pi Web Access 0.45.0; explicit sync may install a different
+The image pins Pi Web Access 0.46.0; explicit sync may install a different
 host-installed version. It can use keyless Exa MCP; other providers/features need
 host-supplied runtime keys or a separately provisioned
 `/home/dev/.pi/agent/web-search.json`. Its config supports environment references

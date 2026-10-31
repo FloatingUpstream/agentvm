@@ -59,9 +59,20 @@ def inspect_vm(msb, name):
 
 
 def project_name(directory):
-    slug = re.sub(r"[^a-z0-9]+", "-", directory.name.lower()).strip("-")[:40] or "project"
-    digest = hashlib.sha256(os.fsencode(directory)).hexdigest()[:8]
-    return f"dev-{slug}-{digest}"
+    slug = re.sub(r"[^a-z0-9]+", "-", directory.name.lower()).strip("-")[:20].rstrip("-") or "project"
+    if not slug[0].isalpha():
+        slug = f"p-{slug}"[:20].rstrip("-")
+    digest = hashlib.sha256(os.fsencode(directory)).hexdigest()[:6]
+    return f"{slug}-{digest}"
+
+
+def core_machine_name(name):
+    """Core allows 32 characters, even though msb allows longer VM names."""
+    target = f"vm-{name}"
+    if len(target) > 32:
+        digest = hashlib.sha256(name.encode()).hexdigest()[:6]
+        target = f"{target[:25].rstrip('-')}-{digest}"
+    return target
 
 
 def project_mounts(directory):
@@ -78,7 +89,7 @@ def project_mounts(directory):
 
 
 def register_project_machine(name, directory):
-    target = f"pivm-{name}"
+    target = f"vm-{name}"
     profiles = json.loads(run("herdr", "machine", "list", "--json",
                               capture_output=True, text=True).stdout)
     existing = any(p["target"] == target and p.get("session") == "agents"
@@ -103,7 +114,7 @@ def register_core_machine(msb, name):
     via = shlex.join([msb, "exec", "--stream", "--user", "dev", name,
                       "--", "sh", "-lc"])
     run("hc", "machine", "add", "--install", "--via", via,
-        "--name", f"pivm-{name}")
+        "--name", core_machine_name(name))
 
 
 def ensure_project_workspace(msb, name, directory):
@@ -120,6 +131,11 @@ def ensure_project_workspace(msb, name, directory):
     guest(msb, name, "herdr", "--session", "agents", "workspace", "create",
           "--cwd", directory, "--label", directory.name, "--focus",
           stdout=subprocess.DEVNULL)
+
+
+def sync_project(msb, name, directory, backend):
+    from pivm_sync import sync
+    sync(msb, name, directory, backend=backend)
 
 
 def open_project(msb, args):
@@ -171,6 +187,15 @@ def open_project(msb, args):
             print(f"Creating {name} — mounting {directory} read/write", flush=True)
             run(*command)
             guest(msb, name, "ln", "-s", "--", str(directory), "/workspace/project")
+            if not args.no_sync:
+                print("Syncing host Pi preferences/resources and Git identity…", flush=True)
+                try:
+                    sync_project(msb, name, directory, args.backend)
+                except Exception:
+                    print(f"Initial sync failed; the VM was created. Retry on the host with:\n"
+                          f"  pivm sync {name} --directory {shlex.quote(str(directory))}"
+                          f" --backend {args.backend}", file=sys.stderr)
+                    raise
         else:
             if info["config"].get("labels", {}).get("pivm.project") != str(directory):
                 raise ValueError(f"{name} belongs to another setup; choose a different --name")
@@ -189,13 +214,13 @@ def open_project(msb, args):
     else:
         if args.backend == "core":
             register_core_machine(msb, name)
-            print(f"Ready — select pivm-{name} in Herdr Core / desktop app.")
+            print(f"Ready — select {core_machine_name(name)} in Herdr Core / desktop app.")
         else:
             # machine add prepares the remote server, including on first launch.
             register_project_machine(name, directory)
             ensure_project_workspace(msb, name, directory)
             if args.attach:
-                run("herdr", "--remote", f"pivm-{name}", "--session", "agents")
+                run("herdr", "--remote", f"vm-{name}", "--session", "agents")
             else:
                 print(f"Ready — select VM: {directory.name} in your existing Herdr machine sidebar.")
 
@@ -268,8 +293,8 @@ def ssh_stanza(msb, name, identity):
     known_hosts = str(Path(identity).parent / "known_hosts").replace("%", "%%")
     identity = str(identity).replace("%", "%%")
     return (
-        f"Host pivm-{name}\n"
-        f"    HostName pivm-{name}\n"
+        f"Host vm-{name}\n"
+        f"    HostName vm-{name}\n"
         "    User dev\n"
         f'    IdentityFile "{identity}"\n'
         "    IdentitiesOnly yes\n"
@@ -277,7 +302,7 @@ def ssh_stanza(msb, name, identity):
         "    ClearAllForwardings yes\n"
         f'    UserKnownHostsFile "{known_hosts}"\n'
         "    StrictHostKeyChecking yes\n"
-        f"    HostKeyAlias pivm-{name}\n"
+        f"    HostKeyAlias vm-{name}\n"
         f"    ProxyCommand {proxy}\n"
     )
 
@@ -307,7 +332,7 @@ def trust_local_host_key(msb, name, info, state):
     if not key.is_file():
         raise ValueError(f"msb did not create its SSH host key at {key}")
     public = run("ssh-keygen", "-y", "-f", key, capture_output=True, text=True).stdout.strip()
-    alias = f"pivm-{name}"
+    alias = f"vm-{name}"
     known = state / "known_hosts"
     lines = known.read_text().splitlines() if known.exists() else []
     lines = [line for line in lines if not line.startswith(alias + " ")]
@@ -369,6 +394,8 @@ def parser():
     opening.add_argument("--disk", default="24G")
     opening.add_argument("--backend", choices=("legacy", "core"), default="core",
                          help="Herdr Core/stream (default) or legacy Herdr/SSH")
+    opening.add_argument("--no-sync", action="store_true",
+                         help="skip initial host Pi preferences/resources and Git identity sync")
     mode = opening.add_mutually_exclusive_group()
     mode.add_argument("--shell", action="store_true", help="open a guest shell instead of Herdr")
     mode.add_argument("--sidebar", action="store_true", help="register in local Herdr sidebar (default)")
@@ -513,11 +540,11 @@ def main():
         # msb start resolves protected env-source references on the host.
         ensure_running(msb, name)
         if not (Path.home() / ".local/state/pivm/ssh" / f"{name}.conf").exists():
-            raise ValueError(f"run pivm setup-ssh {name}, then ssh pivm-{name} true first")
+            raise ValueError(f"run pivm setup-ssh {name}, then ssh vm-{name} true first")
         if args.action == "connect":
-            run("herdr", "--remote", f"pivm-{name}", "--session", "agents")
+            run("herdr", "--remote", f"vm-{name}", "--session", "agents")
         else:
-            run("herdr", "machine", "add", f"pivm-{name}", "--remote-session", "agents",
+            run("herdr", "machine", "add", f"vm-{name}", "--remote-session", "agents",
                 "--label", f"VM: {name}")
 
 
